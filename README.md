@@ -16,7 +16,7 @@ flood-master/
 │
 ├── collect/                   # 실시간 데이터 수집
 │   ├── drainpipe_collect.py   # 서울시 하수관로 수위 수집
-│   └── rainfall_collect.py    # 서울시 강우량 수집
+│   └── rainfall_collect.py    # 서울시 강우량 수집 (병렬 수집 최적화)
 │
 ├── preprocess/                # 데이터 전처리
 │   ├── dem_process.py         # DEM 전처리
@@ -46,25 +46,25 @@ flood-master/
     │   ├── prediction_input_with_area.csv    # 모델 추론용 실시간 입력 데이터
     │   └── risk_output.csv                   # 모델 예측 결과 (위험도 점수 등)
     │
-    └── final/                 # 태블로 연결용 최종 산출물
-        ├── tableau_severity_map.csv          # 태블로 지도 시각화용 데이터
-        └── tableau_master_dashboard.zip      # 태블로 전체 대시보드 연결용 마스터 데이터 (압축 해제 필요)
+    └── final/                 # 태블로 연결용 최종 산출물 (자동 갱신)
+        ├── tableau_master_dashboard.csv      # 지도, TOP10, 산점도 시각화용 데이터
+        └── tableau_timeline.csv              # 월별 침수 추이 + 현재 예측값 시계열 데이터
 ~~~
 
 ### ⚠️ 필수 확인 사항 (압축 해제)
 대용량 파일 업로드 제한으로 인해 일부 주요 파일은 분할 및 압축되어 제공됩니다. 프로젝트 실행 및 태블로 연결 전 **반드시 아래 파일들의 압축을 풀어주세요.**
 1. `data/processed/train_dataset_all_with_area.zip`
-2. `data/processed/train_dataset_all.zip`
-3. `data/final/tableau_master_dashboard.zip`
+2. `data/processed/train_dataset_all.zip` (해당하는 경우)
 
 ***
 
 ## 📊 태블로 대시보드 연결 가이드
 
-생성된 `.twb` 대시보드 파일을 사용하려면, 아래의 `.csv` 파일들을 태블로 데이터 원본에 직접 연결해야 합니다.
+생성된 `.twb` 대시보드 파일을 사용하려면, 아래의 `.csv` 파일들을 태블로 데이터 원본에 **독립적으로(조인 없이)** 연결해야 합니다.
 
-1. **태블로 마스터 데이터 (전체 대시보드용)**: `data/final/tableau_master_dashboard.csv` (zip 파일 압축 해제 후 생성됨)
-2. **태블로 지도 시각화용 데이터**: `data/final/tableau_severity_map.csv`
+1. **태블로 마스터 데이터 (지도 / TOP 10 / 산점도용)**: `data/final/tableau_master_dashboard.csv`
+2. **이전 침수 기록 및 예상 피해도 (라인차트 시계열용)**: `data/final/tableau_timeline.csv`
+3. **서울시 행정경계 (지도 매핑용)**: `data/raw/boundary/*.shp` 파일
 
 ***
 
@@ -115,7 +115,7 @@ python -m venv venv
 venv\Scripts\activate
 python -m pip install rasterio geopandas numpy pandas requests schedule openpyxl aiohttp tabpy lightgbm scikit-learn shapely pyshp
 ~~~
-* `data/processed/`와 `data/final/` 폴더 내의 `.zip` 파일 압축을 모두 해제합니다.
+* `data/processed/` 폴더 내의 `.zip` 파일 압축을 모두 해제합니다.
 
 ### 2. config.py 설정
 ~~~python
