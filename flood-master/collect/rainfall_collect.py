@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import os
 import sys
 import time
+import concurrent.futures
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import WEATHER_API_KEY, RAINFALL_DIR
@@ -22,7 +23,7 @@ def load_seoul_grid():
     return seoul
 
 
-# ── 기상청 단기예보 API 호출 ───────────────────────────────
+# ── 기상청 단기예보 API 호출 (격자 1개) ───────────────────
 def get_rainfall(base_date, base_time, nx, ny):
     url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst"
     params = {
@@ -42,44 +43,42 @@ def get_rainfall(base_date, base_time, nx, ny):
             for item in items:
                 if item.get("category") == "RN1":
                     return item.get("fcstValue", None)
-    except Exception as e:
-        print(f"강우량 API 실패 (nx={nx}, ny={ny}): {e}")
+    except Exception:
+        pass
     return None
 
 
-# ── 수집 공통 로직 ─────────────────────────────────────────
-def collect_rainfall(base_date, base_time):
+# ── 병렬 수집 공통 로직 ────────────────────────────────────
+def collect_rainfall(base_date, base_time, max_workers=20):
     seoul_grid = load_seoul_grid()
-    results = []
 
-    for _, row in seoul_grid.iterrows():
+    def fetch_one(row_tuple):
+        _, row = row_tuple
         nx, ny = int(row['격자 X']), int(row['격자 Y'])
         rn1 = get_rainfall(base_date, base_time, nx, ny)
-        results.append({
+        return {
             "BASE_DATE": base_date,
             "BASE_TIME": base_time,
             "SIDO": row['1단계'],
-            "SGG": row['2단계'],
-            "UMD": row['3단계'],
-            "NX": nx,
-            "NY": ny,
-            "RN1": rn1,
-        })
-        time.sleep(0.05)
+            "SGG":  row['2단계'],
+            "UMD":  row['3단계'],
+            "NX":   nx,
+            "NY":   ny,
+            "RN1":  rn1,
+        }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(fetch_one, seoul_grid.iterrows()))
 
     return pd.DataFrame(results)
 
 
 # ── 학습 데이터용 (기간 지정) ─────────────────────────────
 def collect_train(start_date, end_date):
-    """
-    start_date, end_date: "20260101" 형식
-    기상청 초단기예보는 매시 30분 발표 (0030, 0130, ... 2330)
-    """
     print(f"\n[강우량 학습 데이터 수집] {start_date} ~ {end_date}")
 
     current = datetime.strptime(start_date, "%Y%m%d")
-    end = datetime.strptime(end_date, "%Y%m%d")
+    end     = datetime.strptime(end_date,   "%Y%m%d")
     all_data = []
 
     while current <= end:
@@ -90,7 +89,6 @@ def collect_train(start_date, end_date):
             df = collect_rainfall(base_date, base_time)
             all_data.append(df)
             time.sleep(0.1)
-
         current += timedelta(days=1)
 
     result = pd.concat(all_data, ignore_index=True)
@@ -100,24 +98,23 @@ def collect_train(start_date, end_date):
     return result
 
 
-# ── 실시간용 (현재 시각 기준) ─────────────────────────────
+# ── 실시간용 (현재 시각 1개만 수집) ───────────────────────
 def collect_realtime():
     now = datetime.now()
-    base_date = now.strftime("%Y%m%d")
 
-    # 기상청 초단기예보 발표 시각: 매시 30분
-    # 현재 시각 기준 가장 최근 발표 시각
+    # 가장 최근 정각 30분 기준 시각 1개만 수집 (기존 3개 → 1개로 단축)
     if now.minute >= 30:
         base_time = f"{now.hour:02d}30"
     else:
         prev_hour = (now - timedelta(hours=1)).hour
         base_time = f"{prev_hour:02d}30"
 
-    print(f"\n[강우량 실시간 수집] {base_date} {base_time}")
-    df = collect_rainfall(base_date, base_time)
+    base_date = now.strftime("%Y%m%d")
+    print(f"  수집 중: {base_date} {base_time} (병렬 수집)")
 
-    # 항상 같은 파일명으로 덮어쓰기 (최신 데이터만 유지)
+    result = collect_rainfall(base_date, base_time, max_workers=20)
+
     filename = os.path.join(RAINFALL_DIR, "rainfall_realtime.csv")
-    df.to_csv(filename, index=False, encoding="utf-8-sig")
-    print(f"저장 완료: {filename} ({len(df)}행)")
-    return df
+    result.to_csv(filename, index=False, encoding="utf-8-sig")
+    print(f"저장 완료: {filename} ({len(result)}행)")
+    return result

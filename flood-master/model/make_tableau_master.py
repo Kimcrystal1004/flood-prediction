@@ -1,46 +1,91 @@
-# save as: model/make_tableau_master.py
-
+# model/make_tableau_master.py
 import os
 import pandas as pd
+from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 과거 시계열 데이터 원본
-HISTORY_FILE = os.path.join(BASE_DIR, "data", "processed", "train_dataset_all_with_area.csv")
-# 우리가 만든 최신 동별 요약 (예측 심각도 포함)
-SEVERITY_FILE = os.path.join(BASE_DIR, "data", "final", "tableau_severity_map.csv")
-# 최종 저장할 마스터 통합본 파일
-OUTPUT_FILE = os.path.join(BASE_DIR, "data", "final", "tableau_master_dashboard.csv")
 
-def main():
-    print("[1] 과거 시계열 데이터 불러오기...")
-    df_history = pd.read_csv(HISTORY_FILE)
-    
-    # 만약 원본 데이터에 '측정일시' 같은 날짜 컬럼이 YYYYMMDDHH 형식 등이라면
-    # 태블로가 인식하기 쉽게 YYYY-MM-DD 형식으로 변환해 주면 좋습니다.
-    # (여기서는 데이터 형태에 따라 날짜 컬럼명이 'YR_MTH', 'DATE', '측정일시' 등일 수 있으니 
-    # 원본 파일에 맞춰 진행합니다. 일반적으로 그대로 둬도 태블로에서 파싱 가능합니다.)
-    
-    print("[2] 최신 동별 심각도 데이터 불러오기...")
-    df_severity = pd.read_csv(SEVERITY_FILE)
-    
-    # 심각도 파일에서 필요한 알짜배기 컬럼만 선택
-    # (이미 history에 있는 강수량/수위 등은 중복되므로 뺌)
-    severity_cols = ['EMD_NM', 'PRED_SEVERITY', 'RISK_LEVEL', 'DONG_AREA_KM2']
-    df_severity_subset = df_severity[severity_cols]
-    
-    print("[3] 두 데이터를 동 이름(EMD_NM) 기준으로 결합 중...")
-    # 과거 데이터(history)의 각 행(동 이름) 옆에 최종 심각도를 쫙 붙여줍니다.
-    df_master = pd.merge(df_history, df_severity_subset, on='EMD_NM', how='left')
-    
-    # 저장 경로 생성
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-    
-    # 저장
-    df_master.to_csv(OUTPUT_FILE, index=False, encoding='utf-8-sig')
-    print(f"\n[완료] 대시보드 시각화용 통합 마스터 파일 생성 완료!")
-    print(f"저장 위치: {OUTPUT_FILE}")
-    print(f"총 행 수: {len(df_master):,}행")
-    print("\n이제 태블로에서 'tableau_master_dashboard.csv' 하나만 불러서 모든 차트를 만드시면 됩니다!")
+BASE_DIR      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RISK_FILE     = os.path.join(BASE_DIR, "data", "processed", "risk_output.csv")
+INPUT_FILE    = os.path.join(BASE_DIR, "data", "processed", "prediction_input.csv")
+TRAIN_FILE    = os.path.join(BASE_DIR, "data", "processed", "train_dataset_all.csv")
+MASTER_OUT    = os.path.join(BASE_DIR, "data", "final", "tableau_master_dashboard.csv")
+TIMELINE_OUT  = os.path.join(BASE_DIR, "data", "final", "tableau_timeline.csv")
+
+
+def make_tableau():
+    print("\n[태블로 마스터 대시보드 데이터 생성]")
+    os.makedirs(os.path.join(BASE_DIR, "data", "final"), exist_ok=True)
+
+    # ── 1. 예측 결과 로드 ─────────────────────────────────
+    if not os.path.exists(RISK_FILE):
+        print(f"  ⚠️  예측 결과 파일 없음: {RISK_FILE}")
+        return
+    risk = pd.read_csv(RISK_FILE, encoding='utf-8-sig')
+
+    if 'PRED_DATETIME' not in risk.columns:
+        risk['PRED_DATETIME'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+    if 'PRED_SEVERITY' not in risk.columns:
+        risk['PRED_SEVERITY'] = 0
+    if 'RISK_LEVEL' not in risk.columns:
+        risk['RISK_LEVEL'] = '안전'
+
+    # ── 2. 실시간 입력 데이터 로드 ────────────────────────
+    if not os.path.exists(INPUT_FILE):
+        print(f"  ⚠️  입력 데이터 파일 없음: {INPUT_FILE}")
+        return
+    inp = pd.read_csv(INPUT_FILE, encoding='utf-8-sig')
+
+    # ── 3. 마스터 병합 저장 ───────────────────────────────
+    master = pd.merge(risk, inp, on=['EMD_CD', 'EMD_NM'], how='left')
+    master['UPDATE_TIME'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+    level_map = {'안전': 1, '관심': 2, '주의': 3, '위험': 4}
+    master['RISK_LEVEL_NUM'] = master['RISK_LEVEL'].map(level_map).fillna(1).astype(int)
+
+    master.to_csv(MASTER_OUT, index=False, encoding='utf-8-sig')
+    print(f"  💾 마스터 저장 완료: {MASTER_OUT}  ({len(master)}행)")
+
+    # ── 4. 월별 시계열 + 현재 예측값 합쳐서 timeline 저장 ─
+    if not os.path.exists(TRAIN_FILE):
+        print(f"  ⚠️  학습 데이터 없음, timeline 생략: {TRAIN_FILE}")
+    else:
+        train = pd.read_csv(TRAIN_FILE, encoding='utf-8-sig')
+        train["DATETIME"] = pd.to_datetime(train["DATETIME"])
+        train["연월"] = train["DATETIME"].dt.to_period("M").astype(str)
+        dong_count = train["EMD_CD"].nunique()
+
+        # 과거 데이터 월별 집계
+        hist = train.groupby("연월").agg(
+            평균강수량=("AVG_RN1",    "mean"),
+            최대강수량=("MAX_RN1",    "max"),
+            침수발생건수=("FLOOD_COUNT", "sum"),
+            평균수위=("AVG_WATL",   "mean"),
+            평균심도=("AVG_SHIM",   "mean"),
+        ).reset_index()
+        hist["침수발생건수"] = (hist["침수발생건수"] / dong_count).round(2)
+        hist["구분"] = "과거"
+
+        # 현재 예측값 1행 추가
+        now_ym = datetime.now().strftime("%Y-%m")
+        pred_row = pd.DataFrame([{
+            "연월":        now_ym,
+            "평균강수량":   master["AVG_RN1"].mean(),
+            "최대강수량":   master["MAX_RN1"].max(),
+            "침수발생건수": master["PRED_SEVERITY"].mean(),  # 예측 위험도를 대표값으로
+            "평균수위":    master["AVG_WATL"].mean(),
+            "평균심도":    master["AVG_SHIM"].mean() if "AVG_SHIM" in master.columns else 0,
+            "구분":        "예측",
+        }])
+
+        timeline = pd.concat([hist, pred_row], ignore_index=True)
+        timeline.to_csv(TIMELINE_OUT, index=False, encoding='utf-8-sig')
+        print(f"  💾 타임라인 저장 완료: {TIMELINE_OUT}  ({len(timeline)}행, "
+            f"{timeline['연월'].min()} ~ {timeline['연월'].max()})")
+
+    pred_time = risk['PRED_DATETIME'].iloc[0]
+    print(f"\n  📊 위험 등급 분포 (예측 기준 시각: {pred_time})")
+    print(master['RISK_LEVEL'].value_counts().to_string())
+    return master
+
 
 if __name__ == "__main__":
-    main()
+    make_tableau()
