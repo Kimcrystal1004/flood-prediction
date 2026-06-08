@@ -90,7 +90,7 @@ flood-master/
 
 ## 🕒 실시간 예측 입력 데이터 (`prediction_input_with_area.csv`)
 
-`run.py` 실행 시 3시간마다 자동 갱신되며 467개 동 전체의 현재 상태를 담고 있습니다. 모델은 이 데이터를 입력받아 `risk_output.csv`를 생성합니다.
+3시간마다 자동 갱신되며 467개 동 전체의 현재 상태를 담고 있습니다. 모델은 이 데이터를 입력받아 위험도를 예측합니다.
 
 | 컬럼 | 설명 | 컬럼 | 설명 |
 |---|---|---|---|
@@ -108,11 +108,12 @@ flood-master/
 
 ## ⚙️ 실행 순서
 
-### 1. 환경 설정 및 압축 해제
+### 1. 환경 설정 및 압축 해제 (필수)
+아래 명령어를 통해 필요한 모든 패키지(`openpyxl`, `shapely`, `pyshp` 포함)를 한 번에 설치하세요.
 ~~~bash
 python -m venv venv
 venv\Scripts\activate
-python -m pip install rasterio geopandas numpy pandas requests schedule openpyxl aiohttp tabpy lightgbm scikit-learn
+python -m pip install rasterio geopandas numpy pandas requests schedule openpyxl aiohttp tabpy lightgbm scikit-learn shapely pyshp
 ~~~
 * `data/processed/`와 `data/final/` 폴더 내의 `.zip` 파일 압축을 모두 해제합니다.
 
@@ -133,15 +134,32 @@ python preprocess/add_dong_area.py       # 동 면적 추가
 python model/train_severity.py           # 위험도 모델 학습 및 저장
 ~~~
 
-### 4. 실시간 수집 및 예측 시작
-~~~bash
-python run.py
+### 4. 실시간 데이터 파이프라인 시작 (수집 -> 예측 -> 태블로 갱신)
+파이썬 코드를 수정할 필요 없이, **PowerShell(파워쉘)에서 아래 코드를 그대로 복사+붙여넣기** 하시면 파이프라인 전체가 3시간 주기로 무한 반복 실행됩니다.
+
+~~~powershell
+$env:PYTHONPATH = (Get-Location).Path
+while ($true) {
+    Write-Host "1. 실시간 데이터 수집 시작..." -ForegroundColor Green
+    python -c "from collect.drainpipe_collect import collect_realtime; collect_realtime()"
+    python -c "from collect.rainfall_collect import collect_realtime; collect_realtime()"
+    
+    Write-Host "2. 실시간 데이터 동별 병합..." -ForegroundColor Green
+    python -c "from preprocess.realtime_merge import merge_realtime; merge_realtime()"
+    
+    Write-Host "3. 동별 면적 데이터 추가 (면적 컬럼 매핑)..." -ForegroundColor Green
+    python preprocess/add_dong_area.py
+    
+    Write-Host "4. 침수 위험도 모델 예측 (LGBM)..." -ForegroundColor Green
+    python model/predict_severity.py
+    
+    Write-Host "5. 태블로 마스터 대시보드 데이터 갱신..." -ForegroundColor Green
+    python model/make_tableau_master.py
+    
+    Write-Host "=== 파이프라인 1사이클 완료! 3시간 대기 (종료는 Ctrl+C) ===" -ForegroundColor Yellow
+    Start-Sleep -Seconds 10800
+}
 ~~~
-- 하수관로 + 강우량 동시 수집 (3시간마다)
-- `prediction_input_with_area.csv` 자동 갱신
-- 모델 추론 후 `risk_output.csv` 갱신
-- 태블로용 `tableau_master_dashboard.csv` 갱신
-- `Ctrl+C` 로 종료
 
 ***
 
